@@ -4,28 +4,70 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.location.Location
+import android.location.LocationManager
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
-import java.text.SimpleDateFormat
-import java.util.*
 import com.github.kittinunf.fuel.Fuel
 import com.github.kittinunf.fuel.core.extensions.jsonBody
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
 
 
 class EndlessService : Service() {
-
     private var wakeLock: PowerManager.WakeLock? = null
     private var isServiceStarted = false
-
+    private var mLocationManager: LocationManager? = null
+    private val LOCATION_INTERVAL = 1000L
+    private val LOCATION_DISTANCE = 1f
     override fun onBind(intent: Intent): IBinder? {
         log("Some component want to bind with the service")
         // We don't provide binding, so return null
         return null
     }
+
+    class LocationListener(provider: String) :
+        android.location.LocationListener {
+        var mLastLocation: Location
+        override fun onLocationChanged(location: Location) {
+            log("onLocationChanged: $location")
+            mLastLocation.set(location)
+        }
+
+        override fun onProviderDisabled(provider: String) {
+            log("onProviderDisabled: $provider")
+        }
+
+        override fun onProviderEnabled(provider: String) {
+            log("onProviderEnabled: $provider")
+        }
+
+        override fun onStatusChanged(
+            provider: String,
+            status: Int,
+            extras: Bundle
+        ) {
+            log("onStatusChanged: $provider")
+        }
+
+        init {
+            log("LocationListener $provider")
+            mLastLocation = Location(provider)
+        }
+    }
+
+    var mLocationListeners = arrayOf(
+        LocationListener(LocationManager.GPS_PROVIDER),
+        LocationListener(LocationManager.NETWORK_PROVIDER)
+    )
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         log("onStartCommand executed with startId: $startId")
@@ -51,14 +93,50 @@ class EndlessService : Service() {
         log("The service has been created".toUpperCase())
         val notification = createNotification()
         startForeground(1, notification)
+        initializeLocationManager()
+        try {
+            mLocationManager?.requestLocationUpdates(
+                LocationManager.NETWORK_PROVIDER, LOCATION_INTERVAL, LOCATION_DISTANCE,
+                mLocationListeners[1]
+            )
+        } catch (ex: SecurityException) {
+            log(  "fail to request location update, ignore")
+        } catch (ex: IllegalArgumentException) {
+            log(  "network provider does not exist, " + ex.message)
+        }
+        try {
+            mLocationManager?.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER, LOCATION_INTERVAL, LOCATION_DISTANCE,
+                mLocationListeners[0]
+            )
+        } catch (ex: SecurityException) {
+            log(  "fail to request location update, ignore")
+        } catch (ex: IllegalArgumentException) {
+            log(  "gps provider does not exist " + ex.message)
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         log("The service has been destroyed".toUpperCase())
         Toast.makeText(this, "Service destroyed", Toast.LENGTH_SHORT).show()
+        if (mLocationManager != null) {
+            for (element in mLocationListeners) {
+                try {
+                    mLocationManager?.removeUpdates(element)
+                } catch (ex: java.lang.Exception) {
+                    log( "fail to remove location listners, ignore")
+                }
+            }
+        }
     }
-
+    private fun initializeLocationManager() {
+        log( "initializeLocationManager")
+        if (mLocationManager == null) {
+            mLocationManager =
+                applicationContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        }
+    }
     private fun startService() {
         if (isServiceStarted) return
         log("Starting the foreground service task")
@@ -80,7 +158,7 @@ class EndlessService : Service() {
                 launch(Dispatchers.IO) {
                     pingFakeServer()
                 }
-                delay(1 * 60 * 1000)
+                delay(1 * 5 * 1000)
             }
             log("End of the loop for the service")
         }
